@@ -1,0 +1,40 @@
+# Bygg- och konfigurationsfiler
+build/
+sdkconfig
+sdkconfig.old
+
+# Certifikat och nycklar
+certs/
+*.pem
+certs.h
+*.key 
+
+# IDE-filer
+.vscode/
+*.code-workspace  
+*.idea/ 
+
+# Tredjepartskomponenter
+managed_components/
+
+# Binärfiler
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.obj
+*.a
+*.lib
+
+# loggar o temp filer
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.DS_Store 
+Thumbs.db
+
+
+*.lock
