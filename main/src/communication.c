@@ -9,8 +9,7 @@
 #include "../inc/config.h"
 #include "../inc/pid.h"
 #include "cJSON.h"
-
-static pid_t pid;  
+ 
 
 void process_json_command(const char* json_str) {
     cJSON *root = cJSON_Parse(json_str);
@@ -82,52 +81,42 @@ static void uart_task(void *arg)
 
             if (rx_byte == '\n') {
                 buf[buf_pos] = '\0';
-                ESP_LOGD(TAG, "Received: %s", (char*)buf);
 
                 cJSON *root = cJSON_Parse((char*)buf);
-                if (root) {
-                    cJSON *j_set = cJSON_GetObjectItem(root, "setpoint");
-                    cJSON *j_meas = cJSON_GetObjectItem(root, "measurement");
-                    
-                    if (cJSON_IsNumber(j_set) && cJSON_IsNumber(j_meas)) {
-                        double setpoint = j_set->valuedouble;
-                        double measurement = j_meas->valuedouble;
+                if (!root) { buf_pos = 0; continue; }
 
-                        // dt-beräkning
-                        TickType_t now = xTaskGetTickCount();
-                        double dt;
-                        if (first_update) {
-                            dt = 0.1;
-                            first_update = false;
-                        } else {
-                            dt = (now - last_tick) / (double)configTICK_RATE_HZ;
-                            if (dt <= 0 || dt > 10.0) dt = 0.1; // Säkerhetsgräns
-                        }
-                        last_tick = now;
+                double indoor  = cJSON_GetObjectItem(root, "indoor_temp")->valuedouble;
+                double outdoor = cJSON_GetObjectItem(root, "outdoor_temp")->valuedouble;
+                double airflow = cJSON_GetObjectItem(root, "airflow_rate")->valuedouble;
+                double solar   = cJSON_GetObjectItem(root, "solar_intensity")->valuedouble;
 
-                        double pid_out = pid_update(&pid, setpoint, measurement, dt);
+                cJSON_Delete(root);
+                
+                // 1. Energi beräkning
+                energy_calc_t energy = calculate_energy_need(indoor, outdoor, airflow, solar);
 
-                        // Skicka svar
-                        cJSON *resp = cJSON_CreateObject();
-                        cJSON_AddNumberToObject(resp, "pid", pid_out);
-                        cJSON_AddNumberToObject(resp, "dt", dt); // Debug
-                        char *resp_str = cJSON_PrintUnformatted(resp);
-                        if (resp_str) {
-                            uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
-                            uart_write_bytes(UART_PORT, "\n", 1);
-                            free(resp_str);
-                        }
-                        cJSON_Delete(resp);
-                    } else {
-                        const char *err = "{\"error\":\"missing_fields\"}\n";
-                        uart_write_bytes(UART_PORT, err, strlen(err));
-                    }
-                    cJSON_Delete(root);
-                } else {
-                    ESP_LOGW(TAG, "Invalid JSON");
-                    const char *err = "{\"error\":\"invalid_json\"}\n";
-                    uart_write_bytes(UART_PORT, err, strlen(err));
-                }
+                // 2. PID
+                double setpoint = 21.0;     // du kan senare skicka detta från Python
+                double dt = 0.1;
+                double pid_out = pid_update(&pid, setpoint, indoor, dt);
+
+                double required_power = energy.net_power + pid_out;
+
+                // 3. Bygg PIDResponse JSON
+                cJSON *resp = cJSON_CreateObject();
+                cJSON_AddNumberToObject(resp, "heating_power", required_power);
+                cJSON_AddNumberToObject(resp, "pid_p", pid.kp * (setpoint - indoor));
+                cJSON_AddNumberToObject(resp, "pid_i", pid.ki * pid.integrator);
+                cJSON_AddNumberToObject(resp, "pid_d", pid.kd * pid.last_error);
+                cJSON_AddNumberToObject(resp, "error", setpoint - indoor);
+                cJSON_AddNumberToObject(resp, "timestamp", esp_timer_get_time() / 1000);
+
+                char *resp_str = cJSON_PrintUnformatted(resp);
+                uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
+                uart_write_bytes(UART_PORT, "\n", 1);
+
+                free(resp_str);
+                cJSON_Delete(resp);
 
                 buf_pos = 0;
             }
