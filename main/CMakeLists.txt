@@ -3,6 +3,7 @@ idf_component_register(
         app_main.c
         src/communication.c
         src/pid.c
+        src/calc.c
     
     INCLUDE_DIRS 
         .

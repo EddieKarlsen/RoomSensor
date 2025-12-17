@@ -8,8 +8,11 @@
 #include "communication.h"
 #include "../inc/config.h"
 #include "../inc/pid.h"
+#include "../inc/calc.h"
 #include "cJSON.h"
- 
+
+// Skapa variabeln (typen finns i communication.h)
+sensor_data_t sensor_data = {0};
 
 void process_json_command(const char* json_str) {
     cJSON *root = cJSON_Parse(json_str);
@@ -46,16 +49,15 @@ void send_json_response(const char* type, float value) {
     
     char *json_str = cJSON_PrintUnformatted(root);
     if (json_str != NULL) {
-        uart_write_bytes(UART_NUM, json_str, strlen(json_str));
-        uart_write_bytes(UART_NUM, "\n", 1);
-        free(json_str);  // Viktigt!
+        uart_write_bytes(UART_PORT, json_str, strlen(json_str));
+        uart_write_bytes(UART_PORT, "\n", 1);
+        free(json_str);
     }
     
     cJSON_Delete(root);
 }
 
-
-static void uart_task(void *arg)
+void uart_task(void *arg)
 {
     static uint8_t buf[BUF_SIZE]; 
     static pid_t pid;
@@ -64,8 +66,6 @@ static void uart_task(void *arg)
 
     size_t buf_pos = 0;
     uint8_t rx_byte;
-    TickType_t last_tick = 0;
-    bool first_update = true;
 
     while (1) {
         int len = uart_read_bytes(UART_PORT, &rx_byte, 1, pdMS_TO_TICKS(RX_TIMEOUT_MS));
@@ -83,28 +83,64 @@ static void uart_task(void *arg)
                 buf[buf_pos] = '\0';
 
                 cJSON *root = cJSON_Parse((char*)buf);
-                if (!root) { buf_pos = 0; continue; }
+                if (!root) { 
+                    ESP_LOGE(TAG, "JSON parse failed");
+                    buf_pos = 0; 
+                    continue; 
+                }
 
-                double indoor  = cJSON_GetObjectItem(root, "indoor_temp")->valuedouble;
-                double outdoor = cJSON_GetObjectItem(root, "outdoor_temp")->valuedouble;
-                double airflow = cJSON_GetObjectItem(root, "airflow_rate")->valuedouble;
-                double solar   = cJSON_GetObjectItem(root, "solar_intensity")->valuedouble;
+                // Säkrare JSON parsing med nullcheck
+                cJSON *indoor_json = cJSON_GetObjectItem(root, "indoor_temp");
+                cJSON *outdoor_json = cJSON_GetObjectItem(root, "outdoor_temp");
+                cJSON *airflow_json = cJSON_GetObjectItem(root, "airflow_rate");
+                cJSON *solar_json = cJSON_GetObjectItem(root, "solar_intensity");
+                cJSON *setpoint_json = cJSON_GetObjectItem(root, "setpoint");
+
+                if (!indoor_json || !outdoor_json || !airflow_json || !solar_json) {
+                    ESP_LOGE(TAG, "Missing JSON fields");
+                    cJSON_Delete(root);
+                    buf_pos = 0;
+                    continue;
+                }
+
+                double indoor  = indoor_json->valuedouble;
+                double outdoor = outdoor_json->valuedouble;
+                double airflow = airflow_json->valuedouble;
+                double solar   = solar_json->valuedouble;
+                
+                // Använd setpoint från JSON, eller fallback till 21.0
+                double setpoint = 21.0;  // Default
+                if (setpoint_json && cJSON_IsNumber(setpoint_json)) {
+                    setpoint = setpoint_json->valuedouble;
+                }
 
                 cJSON_Delete(root);
+                
+                // Uppdatera sensor_data
+                sensor_data.temp_in = (float)indoor;
+                sensor_data.temp_out = (float)outdoor;
                 
                 // 1. Energi beräkning
                 energy_calc_t energy = calculate_energy_need(indoor, outdoor, airflow, solar);
 
-                // 2. PID
-                double setpoint = 21.0;     // du kan senare skicka detta från Python
-                double dt = 0.1;
+                // 2. PID med dynamiskt setpoint
+                static int64_t last_update_time = 0;
+                int64_t now = esp_timer_get_time();
+                double dt = (now - last_update_time) / 1e6;  // µs → sekunder
+                if (last_update_time == 0) dt = 0.1;  // First run
+                last_update_time = now;
+
                 double pid_out = pid_update(&pid, setpoint, indoor, dt);
+                double base_power = energy.net_power;
+                // borde ändras till double heating_power = (pid_out / 100.0) * MAX_HEATING_POWER; eller liknande
+                // så att required_power blir mer baserad på PID outputen
 
                 double required_power = energy.net_power + pid_out;
 
                 // 3. Bygg PIDResponse JSON
                 cJSON *resp = cJSON_CreateObject();
                 cJSON_AddNumberToObject(resp, "heating_power", required_power);
+                cJSON_AddNumberToObject(resp, "setpoint", setpoint);  // Inkludera setpoint i svaret
                 cJSON_AddNumberToObject(resp, "pid_p", pid.kp * (setpoint - indoor));
                 cJSON_AddNumberToObject(resp, "pid_i", pid.ki * pid.integrator);
                 cJSON_AddNumberToObject(resp, "pid_d", pid.kd * pid.last_error);
@@ -112,10 +148,12 @@ static void uart_task(void *arg)
                 cJSON_AddNumberToObject(resp, "timestamp", esp_timer_get_time() / 1000);
 
                 char *resp_str = cJSON_PrintUnformatted(resp);
-                uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
-                uart_write_bytes(UART_PORT, "\n", 1);
-
-                free(resp_str);
+                if (resp_str != NULL) {
+                    uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
+                    uart_write_bytes(UART_PORT, "\n", 1);
+                    free(resp_str);
+                }
+                
                 cJSON_Delete(resp);
 
                 buf_pos = 0;
