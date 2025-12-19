@@ -60,18 +60,30 @@ void send_json_response(const char* type, float value) {
 void uart_task(void *arg)
 {
     static uint8_t buf[BUF_SIZE]; 
-    static pid_t pid;
-    
-    pid_init(&pid, 1.0, 0.1, 0.01, -100.0, 100.0);
+    pid_t pid;
+    pid_init(&pid,
+            20.0,  // kp: Proportional gain
+            0.005, // ki: Integral gain
+            0.0,   // kd: Derivative gain
+            0.0,   // out_min: Minimum clamp
+            100.0  // out_max: Maximum clamp
+    );
 
+    // VIKTIGT: Inaktivera ESP_LOG för UART på samma port
+    esp_log_level_set("uart", ESP_LOG_NONE);
+    
     size_t buf_pos = 0;
     uint8_t rx_byte;
+    
+    ESP_LOGI(TAG, "UART task ready - waiting for data");
 
     while (1) {
         int len = uart_read_bytes(UART_PORT, &rx_byte, 1, pdMS_TO_TICKS(RX_TIMEOUT_MS));
         if (len > 0) {
+            // Ignorera carriage return
             if (rx_byte == '\r') continue;
             
+            // Buffer overflow protection
             if (buf_pos >= BUF_SIZE - 1) {
                 ESP_LOGW(TAG, "Buffer full, resetting");
                 buf_pos = 0;
@@ -79,12 +91,16 @@ void uart_task(void *arg)
             
             buf[buf_pos++] = rx_byte;
 
+            // När vi får newline, bearbeta meddelandet
             if (rx_byte == '\n') {
-                buf[buf_pos] = '\0';
+                buf[buf_pos] = '\0';  // Null-terminate
+                
+                // DEBUG: Skriv ut vad vi fick (ta bort detta senare)
+                // ESP_LOGI(TAG, "RX: %s", (char*)buf);
 
                 cJSON *root = cJSON_Parse((char*)buf);
                 if (!root) { 
-                    ESP_LOGE(TAG, "JSON parse failed");
+                    ESP_LOGE(TAG, "JSON parse failed: %s", (char*)buf);
                     buf_pos = 0; 
                     continue; 
                 }
@@ -119,43 +135,51 @@ void uart_task(void *arg)
                 // Uppdatera sensor_data
                 sensor_data.temp_in = (float)indoor;
                 sensor_data.temp_out = (float)outdoor;
-                
-                // 1. Energi beräkning
-                energy_calc_t energy = calculate_energy_need(indoor, outdoor, airflow, solar);
 
-                // 2. PID med dynamiskt setpoint
+                // PID med dynamiskt setpoint
                 static int64_t last_update_time = 0;
                 int64_t now = esp_timer_get_time();
                 double dt = (now - last_update_time) / 1e6;  // µs → sekunder
                 if (last_update_time == 0) dt = 0.1;  // First run
                 last_update_time = now;
 
-                double pid_out = pid_update(&pid, setpoint, indoor, dt);
-                double base_power = energy.net_power;
-                // borde ändras till double heating_power = (pid_out / 100.0) * MAX_HEATING_POWER; eller liknande
-                // så att required_power blir mer baserad på PID outputen
+                double pid_pct = pid_update(&pid, setpoint, indoor, dt);
 
-                double required_power = energy.net_power + pid_out;
+                // Clamping
+                if (pid_pct < 0.0) pid_pct = 0.0;
+                if (pid_pct > 100.0) pid_pct = 100.0;
 
-                // 3. Bygg PIDResponse JSON
+                // Bygg PIDResponse JSON
                 cJSON *resp = cJSON_CreateObject();
-                cJSON_AddNumberToObject(resp, "heating_power", required_power);
-                cJSON_AddNumberToObject(resp, "setpoint", setpoint);  // Inkludera setpoint i svaret
+                if (resp == NULL) {
+                    ESP_LOGE(TAG, "Failed to create JSON response");
+                    buf_pos = 0;
+                    continue;
+                }
+                
+                cJSON_AddNumberToObject(resp, "heating_power_pct", pid_pct);
+                cJSON_AddNumberToObject(resp, "setpoint", setpoint);
+                cJSON_AddNumberToObject(resp, "error", setpoint - indoor);
                 cJSON_AddNumberToObject(resp, "pid_p", pid.kp * (setpoint - indoor));
                 cJSON_AddNumberToObject(resp, "pid_i", pid.ki * pid.integrator);
-                cJSON_AddNumberToObject(resp, "pid_d", pid.kd * pid.last_error);
-                cJSON_AddNumberToObject(resp, "error", setpoint - indoor);
-                cJSON_AddNumberToObject(resp, "timestamp", esp_timer_get_time() / 1000);
+                cJSON_AddNumberToObject(resp, "pid_d", pid.kd * (pid.last_error));
+                cJSON_AddNumberToObject(resp, "timestamp", (int)(esp_timer_get_time() / 1000));
 
                 char *resp_str = cJSON_PrintUnformatted(resp);
                 if (resp_str != NULL) {
+                    // Skicka ENDAST JSON, inget extra
                     uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
                     uart_write_bytes(UART_PORT, "\n", 1);
+                    
+                    // Vänta tills data är sänt
+                    uart_wait_tx_done(UART_PORT, pdMS_TO_TICKS(100));
+                    
                     free(resp_str);
+                } else {
+                    ESP_LOGE(TAG, "Failed to print JSON");
                 }
                 
                 cJSON_Delete(resp);
-
                 buf_pos = 0;
             }
         }
