@@ -12,6 +12,9 @@ typedef struct {
     double last_error;
     double out_min;
     double out_max;
+    double p_term;
+    double i_term;
+    double d_term;
 } pid_t;
 
 

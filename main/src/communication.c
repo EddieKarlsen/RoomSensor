@@ -62,9 +62,9 @@ void uart_task(void *arg)
     static uint8_t buf[BUF_SIZE]; 
     pid_t pid;
     pid_init(&pid,
-            20.0,  // kp: Proportional gain
-            0.005, // ki: Integral gain
-            0.0,   // kd: Derivative gain
+            kpValue,  // kp: Proportional gain
+            kiValue, // ki: Integral gain
+            kdValue,   // kd: Derivative gain
             0.0,   // out_min: Minimum clamp
             100.0  // out_max: Maximum clamp
     );
@@ -130,19 +130,13 @@ void uart_task(void *arg)
                     setpoint = setpoint_json->valuedouble;
                 }
 
-                cJSON_Delete(root);
+                
                 
                 // Uppdatera sensor_data
                 sensor_data.temp_in = (float)indoor;
                 sensor_data.temp_out = (float)outdoor;
 
-                // PID med dynamiskt setpoint
-                static int64_t last_update_time = 0;
-                int64_t now = esp_timer_get_time();
-                double dt = (now - last_update_time) / 1e6;  // µs → sekunder
-                if (last_update_time == 0) dt = 0.1;  // First run
-                last_update_time = now;
-
+                double dt = 60.0;
                 double pid_pct = pid_update(&pid, setpoint, indoor, dt);
 
                 // Clamping
@@ -160,14 +154,14 @@ void uart_task(void *arg)
                 cJSON_AddNumberToObject(resp, "heating_power_pct", pid_pct);
                 cJSON_AddNumberToObject(resp, "setpoint", setpoint);
                 cJSON_AddNumberToObject(resp, "error", setpoint - indoor);
-                cJSON_AddNumberToObject(resp, "pid_p", pid.kp * (setpoint - indoor));
-                cJSON_AddNumberToObject(resp, "pid_i", pid.ki * pid.integrator);
-                cJSON_AddNumberToObject(resp, "pid_d", pid.kd * (pid.last_error));
+                cJSON_AddNumberToObject(resp, "pid_p", pid.p_term);
+                cJSON_AddNumberToObject(resp, "pid_i", pid.i_term);
+                cJSON_AddNumberToObject(resp, "pid_d", pid.d_term);
                 cJSON_AddNumberToObject(resp, "timestamp", (int)(esp_timer_get_time() / 1000));
-
+                
+                // Skicka svaret och cleanup
                 char *resp_str = cJSON_PrintUnformatted(resp);
                 if (resp_str != NULL) {
-                    // Skicka ENDAST JSON, inget extra
                     uart_write_bytes(UART_PORT, resp_str, strlen(resp_str));
                     uart_write_bytes(UART_PORT, "\n", 1);
                     
@@ -180,6 +174,7 @@ void uart_task(void *arg)
                 }
                 
                 cJSON_Delete(resp);
+                cJSON_Delete(root);
                 buf_pos = 0;
             }
         }

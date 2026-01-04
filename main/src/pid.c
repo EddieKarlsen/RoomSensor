@@ -14,27 +14,27 @@ double pid_update(pid_t *p, double setpoint, double measurement, double dt)
     double error = setpoint - measurement;
 
     // Proportionell
-    double P = p->kp * error;
+    p->p_term = p->kp * error;
 
     // Integrator (anti-windup)
-    if (!((P >= p->out_max && error > 0) ||
-          (P <= p->out_min && error < 0))) {
+    if (!((p->p_term >= p->out_max && error > 0) ||
+          (p->p_term <= p->out_min && error < 0))) {
         p->integrator += error * dt;
     }
-
-    double I = p->ki * p->integrator;
+    p->i_term = p->ki * p->integrator;
 
     // Derivata
-    double D = 0.0;
-    if (dt > 0.0)
-        D = p->kd * (error - p->last_error) / dt;
+    p->d_term = 0.0;
+    if (dt > 0.0) {
+        p->d_term = p->kd * (error - p->last_error) / dt;
+    }
+    p->last_error = error;
 
-    double out = P + I + D;
+    double out = p->p_term + p->i_term + p->d_term;
 
     // Klipp
     if (out > p->out_max) out = p->out_max;
     if (out < p->out_min) out = p->out_min;
 
-    p->last_error = error;
     return out;
 }
