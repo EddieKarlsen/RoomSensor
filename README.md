@@ -19,16 +19,3 @@ Detta projekt är en PID-baserad temperaturregulator implementerad för ESP32. S
 * **`communication.c / .h`**: Hanterar JSON-parsing med cJSON och UART-kommunikation.
 * **`calc.c / .h`**: Innehåller termodynamiska formler för att beräkna byggnadens energibehov.
 * **`config.h`**: Globala inställningar som UART-port (UART_NUM_0) och bufferstorlek.
-
-## Inkommande Data (Exempel)
-
-Systemet lyssnar på `UART_PORT` och förväntar sig en JSON-sträng som avslutas med `\n`:
-
-```json
-{
-  "indoor_temp": 19.5,
-  "outdoor_temp": 5.0,
-  "airflow_rate": 0.05,
-  "solar_intensity": 200,
-  "setpoint": 21.0
-}
