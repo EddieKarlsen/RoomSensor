@@ -2,7 +2,7 @@
 
 ![MIT License](https://img.shields.io/badge/License-MIT-green.svg)
 
-This project is the MCU component of the **SimulationTempRatutureProgram(https://github.com/EddieKarlsen/SimulationTempRatutureProgram)**  ecosystem. It implements a PID-based temperature controller on an ESP32. The system receives environmental data via UART in JSON format, calculates the necessary heating power, and returns the PID signal.
+This project is the MCU component of the **[SimulationTempRatutureProgram](https://github.com/EddieKarlsen/SimulationTempRatutureProgram)**  ecosystem. It implements a PID-based temperature controller on an ESP32. The system receives environmental data via UART in JSON format, calculates the necessary heating power, and returns the PID signal.
 
 
 
